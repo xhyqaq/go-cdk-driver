@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -442,8 +445,29 @@ func (b *bucket) NewTypedWriter(ctx context.Context, key string, contentType str
 		Scope:   fmt.Sprintf("%s:%s", b.name, key),
 		Expires: 24 * 3600,
 	}
+
+	t := reflect.TypeOf(putPolicy)
+	v := reflect.ValueOf(&putPolicy).Elem()
+	metadata := opts.Metadata
+	// 遍历map
+	for fieldName, fieldValue := range metadata {
+		// 上游会将大写改为全小写，因此需要特殊处理
+		fieldName = convertToCamelCase(fieldName)
+		field, found := t.FieldByName(fieldName)
+		if !found {
+			return nil, errors.New("字段不存在结构体中:" + fieldName)
+		}
+		fieldValue := reflect.ValueOf(fieldValue)
+		// 检查字段类型是否匹配
+		if fieldValue.Type().AssignableTo(field.Type) {
+			v.FieldByName(fieldName).Set(fieldValue)
+		} else {
+			return nil, errors.New("字段类型不匹配:" + fieldName)
+		}
+	}
+
 	uploadExtra := storage.UploadExtra{
-		Params:   convertMetadataToParams(opts.Metadata),
+		Params:   convertMetadataToParams(metadata),
 		MimeType: contentType,
 	}
 	return &writer{
@@ -541,4 +565,19 @@ func convertMetadataToParams(metadata map[string]string) map[string]string {
 		params["x-qn-meta-"+k] = v
 	}
 	return params
+}
+
+func convertToCamelCase(s string) string {
+	// 将字符串按照 "-" 分割为多个部分
+	parts := strings.Split(s, "-")
+
+	// 遍历每个部分，将首字母转换为大写
+	for i := range parts {
+		parts[i] = cases.Title(language.English).String(parts[i])
+	}
+
+	// 将部分连接起来形成新的字符串
+	result := strings.Join(parts, "")
+
+	return result
 }
